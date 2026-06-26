@@ -1,0 +1,32 @@
+{
+  "name": "embedded-wallet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/sensible": "^6.0.3",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.4",
+    "bitcoinjs-lib": "^6.1.7",
+    "bs58": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "ecpair": "^3.0.0",
+    "fastify": "^5.6.2",
+    "ioredis": "^5.8.2",
+    "tiny-secp256k1": "^2.2.4",
+    "uuid": "^13.0.0",
+    "viem": "^2.40.3",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
