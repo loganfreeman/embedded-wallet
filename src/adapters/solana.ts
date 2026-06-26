@@ -9,16 +9,23 @@ import {
   createAssociatedTokenAccountInstruction,
   createTransferCheckedInstruction,
   getAssociatedTokenAddress,
+  getMint,
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { solanaNetworkConfigs, type SolanaNetworkId } from "../config/networks.js";
 import type {
+  AddressMetadataResponse,
   AdapterBroadcastInput,
   AdapterBroadcastResult,
   AdapterBuildResult,
+  Asset,
+  BalancesResponse,
   BuildTxRequest,
   ChainAdapter,
   NetworkId,
+  QuoteTxResponse,
+  SimulateTxResponse,
+  TxStatusResponse,
 } from "../types/transactions.js";
 import { invariant } from "../types/errors.js";
 
@@ -40,6 +47,9 @@ const bytesFromEncoded = (value: string, encoding: "hex" | "base64" | "base58"):
   return Buffer.from(value.replace(/^0x/, ""), "hex");
 };
 
+const connectionForNetwork = (network: SolanaNetworkId): Connection =>
+  new Connection(solanaNetworkConfigs[network].rpcUrl, "confirmed");
+
 export class SolanaAdapter implements ChainAdapter {
   readonly chain = "solana" as const;
 
@@ -49,8 +59,7 @@ export class SolanaAdapter implements ChainAdapter {
 
   async build(input: BuildTxRequest): Promise<AdapterBuildResult> {
     invariant(isSolanaNetwork(input.network), "UNSUPPORTED_NETWORK", "Unsupported Solana network");
-    const config = solanaNetworkConfigs[input.network];
-    const connection = new Connection(config.rpcUrl, "confirmed");
+    const connection = connectionForNetwork(input.network);
     const payer = new PublicKey(input.from);
     const recipient = new PublicKey(input.to);
     const { blockhash, lastValidBlockHeight } =
@@ -144,8 +153,7 @@ export class SolanaAdapter implements ChainAdapter {
 
   async broadcast(input: AdapterBroadcastInput): Promise<AdapterBroadcastResult> {
     invariant(isSolanaNetwork(input.session.network), "UNSUPPORTED_NETWORK", "Unsupported Solana network");
-    const config = solanaNetworkConfigs[input.session.network];
-    const connection = new Connection(config.rpcUrl, "confirmed");
+    const connection = connectionForNetwork(input.session.network);
     const context = input.session.adapterContext as SolanaContext;
     const storedTxBytes = Buffer.from(context.unsignedTransactionBase64, "base64");
     const transaction = VersionedTransaction.deserialize(storedTxBytes);
@@ -189,5 +197,143 @@ export class SolanaAdapter implements ChainAdapter {
       preflightCommitment: "confirmed",
     });
     return { txHash };
+  }
+
+  async getTxStatus(
+    network: NetworkId,
+    txHash: string,
+    txId?: string,
+  ): Promise<TxStatusResponse> {
+    invariant(isSolanaNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported Solana network");
+    const connection = connectionForNetwork(network);
+    const status = await connection.getSignatureStatus(txHash, {
+      searchTransactionHistory: true,
+    });
+    const value = status.value;
+    if (!value) {
+      return {
+        txId,
+        network,
+        status: "unknown",
+        txHash,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    return {
+      txId,
+      network,
+      status: value.err ? "failed" : value.confirmationStatus === "finalized" ? "confirmed" : "pending",
+      txHash,
+      confirmations: value.confirmations ?? undefined,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async getBalances(
+    network: NetworkId,
+    address: string,
+    assets: Asset[] = [{ type: "native" }],
+  ): Promise<BalancesResponse> {
+    invariant(isSolanaNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported Solana network");
+    const connection = connectionForNetwork(network);
+    const owner = new PublicKey(address);
+    const balances = await Promise.all(
+      assets.map(async (asset) => {
+        if (asset.type === "native") {
+          const balance = await connection.getBalance(owner, "confirmed");
+          return {
+            asset,
+            symbol: "SOL",
+            decimals: 9,
+            balance: balance.toString(),
+          };
+        }
+        const mint = new PublicKey(asset.address);
+        const tokenAccount = await getAssociatedTokenAddress(mint, owner);
+        const [accountBalance, mintInfo] = await Promise.all([
+          connection.getTokenAccountBalance(tokenAccount).catch(() => null),
+          asset.decimals === undefined ? getMint(connection, mint) : null,
+        ]);
+        const decimals = asset.decimals ?? mintInfo?.decimals ?? 0;
+        return {
+          asset: { ...asset, decimals },
+          decimals,
+          balance: accountBalance?.value.amount ?? "0",
+        };
+      }),
+    );
+    return { address, network, balances };
+  }
+
+  async quote(input: BuildTxRequest): Promise<QuoteTxResponse> {
+    const result = await this.build(input);
+    const connection = connectionForNetwork(input.network as SolanaNetworkId);
+    const fee = await connection.getFeeForMessage(
+      VersionedTransaction.deserialize(
+        Buffer.from((result.adapterContext as SolanaContext).unsignedTransactionBase64, "base64"),
+      ).message,
+      "confirmed",
+    );
+    return {
+      network: input.network,
+      estimatedFee: fee.value?.toString(),
+      feeAsset: "SOL",
+      feePreference: input.feePreference,
+      warnings: [],
+    };
+  }
+
+  async simulate(input: BuildTxRequest): Promise<SimulateTxResponse> {
+    try {
+      const result = await this.build(input);
+      const connection = connectionForNetwork(input.network as SolanaNetworkId);
+      const tx = VersionedTransaction.deserialize(
+        Buffer.from((result.adapterContext as SolanaContext).unsignedTransactionBase64, "base64"),
+      );
+      const simulation = await connection.simulateTransaction(tx, {
+        sigVerify: false,
+      });
+      return {
+        ok: !simulation.value.err,
+        network: input.network,
+        reason: simulation.value.err ? "SIMULATION_FAILED" : undefined,
+        message: simulation.value.err
+          ? JSON.stringify(simulation.value.err)
+          : undefined,
+        quote: await this.quote(input),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        network: input.network,
+        reason: "SIMULATION_FAILED",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to simulate transaction",
+      };
+    }
+  }
+
+  async getAddressMetadata(
+    network: NetworkId,
+    address: string,
+  ): Promise<AddressMetadataResponse> {
+    invariant(isSolanaNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported Solana network");
+    try {
+      const publicKey = new PublicKey(address);
+      const connection = connectionForNetwork(network);
+      const account = await connection.getParsedAccountInfo(publicKey, "confirmed");
+      return {
+        network,
+        address,
+        valid: true,
+        normalizedAddress: publicKey.toBase58(),
+        type: account.value ? "wallet" : "unknown",
+        warnings: account.value ? [] : ["Address is valid but no account was found"],
+      };
+    } catch {
+      return { network, address, valid: false, warnings: ["Invalid Solana address"] };
+    }
   }
 }

@@ -7,6 +7,13 @@ import type {
   BuildTxRequest,
   BuildTxResponse,
   CachedTxSession,
+  AddressMetadataResponse,
+  Asset,
+  BalancesResponse,
+  NetworkId,
+  QuoteTxResponse,
+  SimulateTxResponse,
+  TxStatusResponse,
 } from "../types/transactions.js";
 import { AppError, invariant } from "../types/errors.js";
 import { adapterForNetwork } from "../adapters/index.js";
@@ -148,5 +155,85 @@ export class TxService {
       await this.cache.setBroadcastResult(request.txId, response, 86_400);
       return response;
     });
+  }
+
+  async getTxStatus(txId: string): Promise<TxStatusResponse> {
+    const broadcast = await this.cache.getBroadcastResult<BroadcastTxResponse>(txId);
+    const session = await this.cache.getSession(txId);
+
+    if (!session) {
+      if (broadcast) {
+        throw new AppError(
+          "TX_SESSION_EXPIRED",
+          "Transaction session expired; query status by network and txHash",
+          410,
+        );
+      }
+      throw new AppError("TX_NOT_FOUND", "Transaction not found", 404);
+    }
+
+    if (!broadcast) {
+      return {
+        txId,
+        network: session.network,
+        status:
+          Date.parse(session.expiresAt) > Date.now()
+            ? "requires_signature"
+            : "expired",
+        updatedAt: nowIso(),
+      };
+    }
+
+    const adapter = adapterForNetwork(session.network);
+    if (!adapter.getTxStatus) {
+      return {
+        txId,
+        network: session.network,
+        status: "broadcasted",
+        txHash: broadcast.txHash,
+        updatedAt: nowIso(),
+      };
+    }
+    return adapter.getTxStatus(session.network, broadcast.txHash, txId);
+  }
+
+  async getTxStatusByHash(
+    network: NetworkId,
+    txHash: string,
+  ): Promise<TxStatusResponse> {
+    const adapter = adapterForNetwork(network);
+    invariant(adapter.getTxStatus, "UNSUPPORTED_OPERATION", "Transaction status is not supported for this network", 400);
+    return adapter.getTxStatus(network, txHash);
+  }
+
+  async getBalances(
+    network: NetworkId,
+    address: string,
+    assets?: Asset[],
+  ): Promise<BalancesResponse> {
+    const adapter = adapterForNetwork(network);
+    invariant(adapter.getBalances, "UNSUPPORTED_OPERATION", "Balances are not supported for this network", 400);
+    return adapter.getBalances(network, address, assets);
+  }
+
+  async quote(request: BuildTxRequest): Promise<QuoteTxResponse> {
+    const adapter = adapterForNetwork(request.network);
+    invariant(adapter.quote, "UNSUPPORTED_OPERATION", "Quotes are not supported for this network", 400);
+    return adapter.quote(request);
+  }
+
+  async simulate(request: BuildTxRequest): Promise<SimulateTxResponse> {
+    const adapter = adapterForNetwork(request.network);
+    invariant(adapter.simulate, "UNSUPPORTED_OPERATION", "Simulation is not supported for this network", 400);
+    return adapter.simulate(request);
+  }
+
+  async getAddressMetadata(
+    network: NetworkId,
+    address: string,
+  ): Promise<AddressMetadataResponse> {
+    const adapter = adapterForNetwork(network);
+    invariant(adapter.getAddressMetadata, "UNSUPPORTED_OPERATION", "Address metadata is not supported for this network", 400);
+    return adapter.getAddressMetadata(network, address);
   }
 }

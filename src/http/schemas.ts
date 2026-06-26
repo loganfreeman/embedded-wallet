@@ -34,6 +34,38 @@ export const buildTxSchema = z.object({
   feePreference: z.enum(["low", "medium", "high"]).optional(),
 });
 
+export const networkParamSchema = z.object({
+  network: networkSchema,
+});
+
+export const txIdParamSchema = z.object({
+  txId: z.string().uuid(),
+});
+
+export const txHashParamsSchema = z.object({
+  network: networkSchema,
+  txHash: z.string().min(1),
+});
+
+export const addressParamsSchema = z.object({
+  network: networkSchema,
+  address: z.string().min(1),
+});
+
+export const balancesQuerySchema = z.object({
+  network: networkSchema,
+  assets: z
+    .string()
+    .optional()
+    .transform((value) => {
+      if (!value) return undefined;
+      return value
+        .split(",")
+        .map((asset) => asset.trim())
+        .filter(Boolean);
+    }),
+});
+
 export const signatureSchema = z.object({
   payloadId: z.string().min(1),
   signature: z.string().min(1),

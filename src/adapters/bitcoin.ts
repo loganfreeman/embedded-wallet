@@ -1,11 +1,16 @@
 import * as bitcoin from "bitcoinjs-lib";
 import type {
+  AddressMetadataResponse,
   AdapterBroadcastInput,
   AdapterBroadcastResult,
   AdapterBuildResult,
+  BalancesResponse,
   BuildTxRequest,
   ChainAdapter,
   NetworkId,
+  QuoteTxResponse,
+  SimulateTxResponse,
+  TxStatusResponse,
 } from "../types/transactions.js";
 import { bitcoinNetworkConfigs, type BitcoinNetworkId } from "../config/networks.js";
 import { invariant } from "../types/errors.js";
@@ -24,6 +29,24 @@ type Utxo = {
   value: number;
   status?: {
     confirmed: boolean;
+  };
+};
+
+type AddressInfo = {
+  chain_stats: {
+    funded_txo_sum: number;
+    spent_txo_sum: number;
+  };
+  mempool_stats: {
+    funded_txo_sum: number;
+    spent_txo_sum: number;
+  };
+};
+
+type TxInfo = {
+  status: {
+    confirmed: boolean;
+    block_height?: number;
   };
 };
 
@@ -181,5 +204,110 @@ export class BitcoinAdapter implements ChainAdapter {
     const text = await response.text();
     invariant(response.ok, "BROADCAST_FAILED", text, 502);
     return text;
+  }
+
+  async getTxStatus(
+    network: NetworkId,
+    txHash: string,
+    txId?: string,
+  ): Promise<TxStatusResponse> {
+    invariant(isBitcoinNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported Bitcoin network");
+    const config = bitcoinNetworkConfigs[network];
+    try {
+      const tx = await fetchJson<TxInfo>(`${config.mempoolApiUrl}/tx/${txHash}`);
+      return {
+        txId,
+        network,
+        status: tx.status.confirmed ? "confirmed" : "pending",
+        txHash,
+        blockNumber: tx.status.block_height?.toString(),
+        updatedAt: new Date().toISOString(),
+      };
+    } catch {
+      return {
+        txId,
+        network,
+        status: "unknown",
+        txHash,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  async getBalances(
+    network: NetworkId,
+    address: string,
+  ): Promise<BalancesResponse> {
+    invariant(isBitcoinNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported Bitcoin network");
+    const config = bitcoinNetworkConfigs[network];
+    bitcoin.address.toOutputScript(address, networkFromConfig(config.network));
+    const info = await fetchJson<AddressInfo>(
+      `${config.mempoolApiUrl}/address/${address}`,
+    );
+    const confirmed =
+      info.chain_stats.funded_txo_sum - info.chain_stats.spent_txo_sum;
+    const mempool =
+      info.mempool_stats.funded_txo_sum - info.mempool_stats.spent_txo_sum;
+    return {
+      address,
+      network,
+      balances: [
+        {
+          asset: { type: "native" },
+          symbol: "BTC",
+          decimals: 8,
+          balance: (confirmed + mempool).toString(),
+        },
+      ],
+    };
+  }
+
+  async quote(input: BuildTxRequest): Promise<QuoteTxResponse> {
+    const result = await this.build(input);
+    return {
+      network: input.network,
+      estimatedFee: result.display.estimatedFee,
+      feeAsset: "BTC",
+      feePreference: input.feePreference,
+      warnings: [],
+    };
+  }
+
+  async simulate(input: BuildTxRequest): Promise<SimulateTxResponse> {
+    try {
+      const quote = await this.quote(input);
+      return { ok: true, network: input.network, quote };
+    } catch (error) {
+      return {
+        ok: false,
+        network: input.network,
+        reason: "SIMULATION_FAILED",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to simulate transaction",
+      };
+    }
+  }
+
+  async getAddressMetadata(
+    network: NetworkId,
+    address: string,
+  ): Promise<AddressMetadataResponse> {
+    invariant(isBitcoinNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported Bitcoin network");
+    const config = bitcoinNetworkConfigs[network];
+    try {
+      bitcoin.address.toOutputScript(address, networkFromConfig(config.network));
+      return {
+        network,
+        address,
+        valid: true,
+        normalizedAddress: address,
+        type: "wallet",
+        warnings: [],
+      };
+    } catch {
+      return { network, address, valid: false, warnings: ["Invalid Bitcoin address"] };
+    }
   }
 }

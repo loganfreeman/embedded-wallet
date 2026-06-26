@@ -65,6 +65,63 @@ export type BuildTxResponse = {
   };
 };
 
+export type TxStatusResponse = {
+  txId?: string;
+  network: NetworkId;
+  status:
+    | "requires_signature"
+    | "broadcasted"
+    | "pending"
+    | "confirmed"
+    | "failed"
+    | "expired"
+    | "unknown";
+  txHash?: string;
+  confirmations?: number;
+  blockNumber?: string;
+  explorerUrl?: string;
+  updatedAt: string;
+};
+
+export type BalanceItem = {
+  asset: Asset;
+  symbol?: string;
+  decimals?: number;
+  balance: string;
+};
+
+export type BalancesResponse = {
+  address: string;
+  network: NetworkId;
+  balances: BalanceItem[];
+};
+
+export type QuoteTxResponse = {
+  network: NetworkId;
+  estimatedFee?: string;
+  feeAsset?: string;
+  gas?: string;
+  feePreference?: "low" | "medium" | "high";
+  warnings: string[];
+};
+
+export type SimulateTxResponse = {
+  ok: boolean;
+  network: NetworkId;
+  reason?: string;
+  message?: string;
+  quote?: QuoteTxResponse;
+};
+
+export type AddressMetadataResponse = {
+  network: NetworkId;
+  address: string;
+  valid: boolean;
+  normalizedAddress?: string;
+  type?: "wallet" | "contract" | "token_account" | "unknown";
+  warnings: string[];
+};
+
 export type SignatureInput = {
   payloadId: string;
   signature: string;
@@ -127,4 +184,20 @@ export interface ChainAdapter {
   supports(network: NetworkId): boolean;
   build(input: BuildTxRequest): Promise<AdapterBuildResult>;
   broadcast(input: AdapterBroadcastInput): Promise<AdapterBroadcastResult>;
+  getTxStatus?(
+    network: NetworkId,
+    txHash: string,
+    txId?: string,
+  ): Promise<TxStatusResponse>;
+  getBalances?(
+    network: NetworkId,
+    address: string,
+    assets?: Asset[],
+  ): Promise<BalancesResponse>;
+  quote?(input: BuildTxRequest): Promise<QuoteTxResponse>;
+  simulate?(input: BuildTxRequest): Promise<SimulateTxResponse>;
+  getAddressMetadata?(
+    network: NetworkId,
+    address: string,
+  ): Promise<AddressMetadataResponse>;
 }

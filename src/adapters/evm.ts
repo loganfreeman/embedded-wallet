@@ -4,12 +4,26 @@ import {
   hexToSignature,
   http,
   isAddress,
+  getAddress,
   keccak256,
   parseTransaction,
   serializeTransaction,
   type Hex,
 } from "viem";
-import type { ChainAdapter, BuildTxRequest, AdapterBuildResult, AdapterBroadcastInput, AdapterBroadcastResult, NetworkId } from "../types/transactions.js";
+import type {
+  AddressMetadataResponse,
+  Asset,
+  BalancesResponse,
+  ChainAdapter,
+  BuildTxRequest,
+  AdapterBuildResult,
+  AdapterBroadcastInput,
+  AdapterBroadcastResult,
+  NetworkId,
+  QuoteTxResponse,
+  SimulateTxResponse,
+  TxStatusResponse,
+} from "../types/transactions.js";
 import { AppError, invariant } from "../types/errors.js";
 import { evmNetworkConfigs, type EvmNetworkId } from "../config/networks.js";
 
@@ -23,6 +37,27 @@ const erc20Abi = [
       { name: "value", type: "uint256" },
     ],
     outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "decimals",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    name: "symbol",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
   },
 ] as const;
 
@@ -45,6 +80,15 @@ const isEvmNetwork = (network: NetworkId): network is EvmNetworkId =>
 const normalizeHex = (value?: string | null): string | undefined =>
   value?.toLowerCase();
 
+const clientForNetwork = (network: EvmNetworkId) => {
+  const config = evmNetworkConfigs[network];
+  invariant(config.rpcUrl, "MISSING_RPC_URL", `Missing RPC URL for ${network}`, 500);
+  return createPublicClient({
+    chain: config.viemChain,
+    transport: http(config.rpcUrl),
+  });
+};
+
 export class EvmAdapter implements ChainAdapter {
   readonly chain = "evm" as const;
 
@@ -55,14 +99,10 @@ export class EvmAdapter implements ChainAdapter {
   async build(input: BuildTxRequest): Promise<AdapterBuildResult> {
     invariant(isEvmNetwork(input.network), "UNSUPPORTED_NETWORK", "Unsupported EVM network");
     const config = evmNetworkConfigs[input.network];
-    invariant(config.rpcUrl, "MISSING_RPC_URL", `Missing RPC URL for ${input.network}`, 500);
     invariant(isAddress(input.from), "INVALID_FROM", "Invalid EVM from address");
     invariant(isAddress(input.to), "INVALID_TO", "Invalid EVM to address");
 
-    const client = createPublicClient({
-      chain: config.viemChain,
-      transport: http(config.rpcUrl),
-    });
+    const client = clientForNetwork(input.network);
 
     const value =
       input.asset.type === "native" ? BigInt(input.amount) : 0n;
@@ -206,13 +246,147 @@ export class EvmAdapter implements ChainAdapter {
     invariant(parsed.maxFeePerGas === BigInt(context.maxFeePerGas), "TX_MISMATCH", "Signed transaction maxFeePerGas mismatch");
     invariant(parsed.maxPriorityFeePerGas === BigInt(context.maxPriorityFeePerGas), "TX_MISMATCH", "Signed transaction maxPriorityFeePerGas mismatch");
 
-    const client = createPublicClient({
-      chain: config.viemChain,
-      transport: http(config.rpcUrl),
-    });
+    const client = clientForNetwork(input.session.network);
     const txHash = await client.sendRawTransaction({
       serializedTransaction: signedTransaction,
     });
     return { txHash };
+  }
+
+  async getTxStatus(
+    network: NetworkId,
+    txHash: string,
+    txId?: string,
+  ): Promise<TxStatusResponse> {
+    invariant(isEvmNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported EVM network");
+    const client = clientForNetwork(network);
+    try {
+      const receipt = await client.getTransactionReceipt({ hash: txHash as Hex });
+      const latestBlock = await client.getBlockNumber();
+      const confirmations =
+        receipt.blockNumber > 0n
+          ? Number(latestBlock - receipt.blockNumber + 1n)
+          : undefined;
+      return {
+        txId,
+        network,
+        status: receipt.status === "success" ? "confirmed" : "failed",
+        txHash,
+        confirmations,
+        blockNumber: receipt.blockNumber.toString(),
+        updatedAt: new Date().toISOString(),
+      };
+    } catch {
+      return {
+        txId,
+        network,
+        status: "pending",
+        txHash,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  async getBalances(
+    network: NetworkId,
+    address: string,
+    assets: Asset[] = [{ type: "native" }],
+  ): Promise<BalancesResponse> {
+    invariant(isEvmNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported EVM network");
+    invariant(isAddress(address), "INVALID_ADDRESS", "Invalid EVM address");
+    const config = evmNetworkConfigs[network];
+    const client = clientForNetwork(network);
+    const balances = await Promise.all(
+      assets.map(async (asset) => {
+        if (asset.type === "native") {
+          const balance = await client.getBalance({ address: address as Hex });
+          return {
+            asset,
+            symbol: config.viemChain.nativeCurrency.symbol,
+            decimals: config.viemChain.nativeCurrency.decimals,
+            balance: balance.toString(),
+          };
+        }
+        invariant(isAddress(asset.address), "INVALID_TOKEN", "Invalid token contract address");
+        const [balance, decimals, symbol] = await Promise.all([
+          client.readContract({
+            address: asset.address as Hex,
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [address as Hex],
+          }),
+          asset.decimals ??
+            client.readContract({
+              address: asset.address as Hex,
+              abi: erc20Abi,
+              functionName: "decimals",
+            }),
+          client.readContract({
+            address: asset.address as Hex,
+            abi: erc20Abi,
+            functionName: "symbol",
+          }),
+        ]);
+        return {
+          asset: { ...asset, decimals: Number(decimals) },
+          symbol,
+          decimals: Number(decimals),
+          balance: balance.toString(),
+        };
+      }),
+    );
+    return { address, network, balances };
+  }
+
+  async quote(input: BuildTxRequest): Promise<QuoteTxResponse> {
+    const result = await this.build(input);
+    const context = result.adapterContext as EvmContext;
+    const config = evmNetworkConfigs[input.network as EvmNetworkId];
+    return {
+      network: input.network,
+      estimatedFee: result.display.estimatedFee,
+      feeAsset: config.viemChain.nativeCurrency.symbol,
+      gas: context.gas,
+      feePreference: input.feePreference,
+      warnings: [],
+    };
+  }
+
+  async simulate(input: BuildTxRequest): Promise<SimulateTxResponse> {
+    try {
+      const quote = await this.quote(input);
+      return { ok: true, network: input.network, quote };
+    } catch (error) {
+      return {
+        ok: false,
+        network: input.network,
+        reason: error instanceof AppError ? error.code : "SIMULATION_FAILED",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to simulate transaction",
+      };
+    }
+  }
+
+  async getAddressMetadata(
+    network: NetworkId,
+    address: string,
+  ): Promise<AddressMetadataResponse> {
+    invariant(isEvmNetwork(network), "UNSUPPORTED_NETWORK", "Unsupported EVM network");
+    if (!isAddress(address)) {
+      return { network, address, valid: false, warnings: ["Invalid EVM address"] };
+    }
+    const client = clientForNetwork(network);
+    const normalizedAddress = getAddress(address);
+    const code = await client.getCode({ address: normalizedAddress });
+    return {
+      network,
+      address,
+      valid: true,
+      normalizedAddress,
+      type: code && code !== "0x" ? "contract" : "wallet",
+      warnings: [],
+    };
   }
 }

@@ -186,6 +186,116 @@ const broadcastTxResponseSchema: OpenAPIV3_1.SchemaObject = {
   },
 };
 
+const txStatusResponseSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["network", "status", "updatedAt"],
+  properties: {
+    txId: { type: "string", format: "uuid" },
+    network: { type: "string" },
+    status: {
+      enum: [
+        "requires_signature",
+        "broadcasted",
+        "pending",
+        "confirmed",
+        "failed",
+        "expired",
+        "unknown",
+      ],
+    },
+    txHash: { type: "string" },
+    confirmations: { type: "integer" },
+    blockNumber: { type: "string" },
+    explorerUrl: { type: "string" },
+    updatedAt: { type: "string", format: "date-time" },
+  },
+};
+
+const balanceItemSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["asset", "balance"],
+  properties: {
+    asset: assetSchema,
+    symbol: { type: "string" },
+    decimals: { type: "integer" },
+    balance: { type: "string" },
+  },
+};
+
+const balancesResponseSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["address", "network", "balances"],
+  properties: {
+    address: { type: "string" },
+    network: { type: "string" },
+    balances: {
+      type: "array",
+      items: balanceItemSchema,
+    },
+  },
+};
+
+const quoteTxResponseSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["network", "warnings"],
+  properties: {
+    network: { type: "string" },
+    estimatedFee: { type: "string" },
+    feeAsset: { type: "string" },
+    gas: { type: "string" },
+    feePreference: { enum: ["low", "medium", "high"] },
+    warnings: { type: "array", items: { type: "string" } },
+  },
+};
+
+const simulateTxResponseSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["ok", "network"],
+  properties: {
+    ok: { type: "boolean" },
+    network: { type: "string" },
+    reason: { type: "string" },
+    message: { type: "string" },
+    quote: quoteTxResponseSchema,
+  },
+};
+
+const addressMetadataResponseSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["network", "address", "valid", "warnings"],
+  properties: {
+    network: { type: "string" },
+    address: { type: "string" },
+    valid: { type: "boolean" },
+    normalizedAddress: { type: "string" },
+    type: { enum: ["wallet", "contract", "token_account", "unknown"] },
+    warnings: { type: "array", items: { type: "string" } },
+  },
+};
+
+const networkMetadataSchema: OpenAPIV3_1.SchemaObject = {
+  type: "object",
+  required: ["id", "chain", "displayName", "nativeCurrency", "features"],
+  properties: {
+    id: { type: "string" },
+    chain: { enum: ["evm", "solana", "bitcoin"] },
+    displayName: { type: "string" },
+    nativeCurrency: {
+      type: "object",
+      required: ["name", "symbol", "decimals"],
+      properties: {
+        name: { type: "string" },
+        symbol: { type: "string" },
+        decimals: { type: "integer" },
+      },
+    },
+    features: {
+      type: "object",
+      additionalProperties: { type: "boolean" },
+    },
+  },
+};
+
 export const openApiOptions: FastifyDynamicSwaggerOptions = {
   openapi: {
     openapi: "3.1.0",
@@ -219,6 +329,12 @@ export const openApiOptions: FastifyDynamicSwaggerOptions = {
         BuildTxResponse: buildTxResponseSchema,
         BroadcastTxRequest: broadcastTxRequestSchema,
         BroadcastTxResponse: broadcastTxResponseSchema,
+        TxStatusResponse: txStatusResponseSchema,
+        BalancesResponse: balancesResponseSchema,
+        QuoteTxResponse: quoteTxResponseSchema,
+        SimulateTxResponse: simulateTxResponseSchema,
+        AddressMetadataResponse: addressMetadataResponseSchema,
+        NetworkMetadata: networkMetadataSchema,
       },
     },
   },
@@ -242,10 +358,30 @@ export const routeSchemas = {
     response: {
       200: {
         type: "object",
-        required: ["networks", "adapters"],
+        required: ["networks", "metadata", "adapters"],
         properties: {
           networks: { type: "array", items: { type: "string" } },
+          metadata: { type: "array", items: networkMetadataSchema },
           adapters: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+  network: {
+    tags: ["Networks"],
+    params: {
+      type: "object",
+      required: ["network"],
+      properties: {
+        network: { type: "string" },
+      },
+    },
+    response: {
+      200: {
+        type: "object",
+        required: ["network"],
+        properties: {
+          network: networkMetadataSchema,
         },
       },
     },
@@ -270,6 +406,95 @@ export const routeSchemas = {
       410: errorResponseSchema,
       423: errorResponseSchema,
       502: errorResponseSchema,
+    },
+  },
+  txStatus: {
+    tags: ["Transactions"],
+    params: {
+      type: "object",
+      required: ["txId"],
+      properties: {
+        txId: { type: "string", format: "uuid" },
+      },
+    },
+    response: {
+      200: txStatusResponseSchema,
+      404: errorResponseSchema,
+      410: errorResponseSchema,
+    },
+  },
+  txStatusByHash: {
+    tags: ["Transactions"],
+    params: {
+      type: "object",
+      required: ["network", "txHash"],
+      properties: {
+        network: { type: "string" },
+        txHash: { type: "string" },
+      },
+    },
+    response: {
+      200: txStatusResponseSchema,
+      400: errorResponseSchema,
+    },
+  },
+  balances: {
+    tags: ["Wallets"],
+    params: {
+      type: "object",
+      required: ["address"],
+      properties: {
+        address: { type: "string" },
+      },
+    },
+    querystring: {
+      type: "object",
+      required: ["network"],
+      properties: {
+        network: { type: "string" },
+        assets: {
+          type: "string",
+          description:
+            "Comma-separated asset list. Use native for the native coin, or token mint/contract addresses.",
+        },
+      },
+    },
+    response: {
+      200: balancesResponseSchema,
+      400: errorResponseSchema,
+    },
+  },
+  quoteTx: {
+    tags: ["Transactions"],
+    body: buildTxRequestSchema,
+    response: {
+      200: quoteTxResponseSchema,
+      400: errorResponseSchema,
+      502: errorResponseSchema,
+    },
+  },
+  simulateTx: {
+    tags: ["Transactions"],
+    body: buildTxRequestSchema,
+    response: {
+      200: simulateTxResponseSchema,
+      400: errorResponseSchema,
+      502: errorResponseSchema,
+    },
+  },
+  addressMetadata: {
+    tags: ["Addresses"],
+    params: {
+      type: "object",
+      required: ["network", "address"],
+      properties: {
+        network: { type: "string" },
+        address: { type: "string" },
+      },
+    },
+    response: {
+      200: addressMetadataResponseSchema,
+      400: errorResponseSchema,
     },
   },
 } as const;
