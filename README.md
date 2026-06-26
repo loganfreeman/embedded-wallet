@@ -94,6 +94,18 @@ Important values:
 
 ## API
 
+Interactive Swagger documentation is available when the server is running:
+
+```txt
+http://localhost:3000/docs
+```
+
+The OpenAPI document is available at:
+
+```txt
+http://localhost:3000/docs/json
+```
+
 ### Health
 
 ```txt
@@ -145,6 +157,171 @@ Response:
       "type": "native"
     }
   }
+}
+```
+
+## Client Signing
+
+The client signs only the payloads returned by `/tx/build`. The client should not send an unsigned transaction back to `/tx/broadcast`; the server already stored the canonical unsigned transaction state under `txId`.
+
+Each item in `signingInstructions` tells the client which payload to sign, which signer must sign it, and what signature format the server expects.
+
+### EVM Signing
+
+Networks:
+
+- Base
+- Arbitrum One
+- Ethereum
+- Sepolia testnets
+
+Signing instruction:
+
+```json
+{
+  "payloadId": "payload_0",
+  "signer": "0xSender",
+  "algorithm": "secp256k1",
+  "payloadType": "evm_transaction_hash",
+  "encoding": "hex"
+}
+```
+
+The payload is a hex transaction hash:
+
+```json
+{
+  "id": "payload_0",
+  "payload": "0x...",
+  "encoding": "hex"
+}
+```
+
+Expected client result:
+
+```json
+{
+  "payloadId": "payload_0",
+  "signature": "0x...",
+  "encoding": "hex"
+}
+```
+
+The EVM signature must be a Secp256k1 signature over the returned hash. It should include recovery data so the server can serialize the final transaction.
+
+Clients may alternatively submit a fully signed EVM raw transaction:
+
+```json
+{
+  "txId": "server-generated-uuid",
+  "signedTransaction": "0x02...",
+  "encoding": "hex"
+}
+```
+
+The server parses the signed transaction and verifies it matches the original cached transaction before broadcasting.
+
+### Solana Signing
+
+Networks:
+
+- Solana Mainnet-Beta
+- Solana Devnet
+
+Signing instruction:
+
+```json
+{
+  "payloadId": "payload_0",
+  "signer": "SenderPublicKey",
+  "algorithm": "ed25519",
+  "payloadType": "solana_message",
+  "encoding": "base64"
+}
+```
+
+The payload is the serialized Solana transaction message encoded as base64:
+
+```json
+{
+  "id": "payload_0",
+  "payload": "base64-message-bytes",
+  "encoding": "base64"
+}
+```
+
+Expected client result:
+
+```json
+{
+  "payloadId": "payload_0",
+  "signature": "base64-64-byte-ed25519-signature",
+  "encoding": "base64"
+}
+```
+
+The signature must be exactly 64 bytes after decoding. The server attaches it to the cached `VersionedTransaction` and broadcasts the original message.
+
+Clients may alternatively submit a fully signed serialized Solana transaction:
+
+```json
+{
+  "txId": "server-generated-uuid",
+  "signedTransaction": "base64-signed-transaction",
+  "encoding": "base64"
+}
+```
+
+The server requires the signed transaction message bytes to exactly match the cached message.
+
+### Bitcoin Signing
+
+Networks:
+
+- Bitcoin Mainnet
+- Bitcoin Signet
+
+Signing instruction:
+
+```json
+{
+  "payloadId": "payload_0",
+  "signer": "bc1...",
+  "algorithm": "secp256k1",
+  "payloadType": "bitcoin_psbt",
+  "encoding": "base64"
+}
+```
+
+The payload is a PSBT encoded as base64:
+
+```json
+{
+  "id": "payload_0",
+  "payload": "base64-psbt",
+  "encoding": "base64"
+}
+```
+
+Expected client result:
+
+```json
+{
+  "txId": "server-generated-uuid",
+  "signedTransaction": "base64-signed-psbt",
+  "encoding": "base64"
+}
+```
+
+The signed PSBT must preserve the original inputs and outputs. The server finalizes the PSBT, extracts the raw transaction, and broadcasts it.
+
+Clients may also submit a finalized raw Bitcoin transaction:
+
+```json
+{
+  "txId": "server-generated-uuid",
+  "signedTransaction": "020000000001...",
+  "encoding": "hex"
 }
 ```
 

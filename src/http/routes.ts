@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { buildTxSchema, broadcastTxSchema } from "./schemas.js";
+import { routeSchemas } from "./openapi.js";
 import type { TxService } from "../services/tx-service.js";
 import { adapters } from "../adapters/index.js";
 
@@ -12,9 +13,11 @@ export const registerRoutes = async (
   app: FastifyInstance,
   txService: TxService,
 ): Promise<void> => {
-  app.get("/health", async () => ({ status: "ok" }));
+  app.get("/health", { schema: routeSchemas.health }, async () => ({
+    status: "ok",
+  }));
 
-  app.get("/networks", async () => ({
+  app.get("/networks", { schema: routeSchemas.networks }, async () => ({
     networks: [
       "base",
       "base-sepolia",
@@ -30,14 +33,14 @@ export const registerRoutes = async (
     adapters: adapters.map((adapter) => adapter.chain),
   }));
 
-  app.post("/tx/build", async (request, reply) => {
+  app.post("/tx/build", { schema: routeSchemas.buildTx }, async (request, reply) => {
     const body = buildTxSchema.parse(request.body);
     const clientId = clientIdFromRequest(request.headers);
     const response = await txService.build(clientId, body);
     return reply.code(201).send(response);
   });
 
-  app.post("/tx/broadcast", async (request) => {
+  app.post("/tx/broadcast", { schema: routeSchemas.broadcastTx }, async (request) => {
     const body = broadcastTxSchema.parse(request.body);
     return txService.broadcast(body);
   });

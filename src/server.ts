@@ -1,5 +1,7 @@
 import Fastify from "fastify";
 import sensible from "@fastify/sensible";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 import { ZodError } from "zod";
 import { RedisLock } from "./storage/locks.js";
 import { redis } from "./storage/redis.js";
@@ -8,12 +10,17 @@ import { TxService } from "./services/tx-service.js";
 import { registerRoutes } from "./http/routes.js";
 import { AppError } from "./types/errors.js";
 import { env } from "./config/env.js";
+import { openApiOptions } from "./http/openapi.js";
 
 export const buildServer = async () => {
   const app = Fastify({
     logger: true,
   });
   await app.register(sensible);
+  await app.register(swagger, openApiOptions);
+  await app.register(swaggerUi, {
+    routePrefix: "/docs",
+  });
 
   const txService = new TxService(new TxCache(redis), new RedisLock(redis));
   await registerRoutes(app, txService);
